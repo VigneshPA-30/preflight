@@ -18,19 +18,8 @@ def sync_workspace(workspace: Path, canon: str) -> dict[str, Any]:
     return _sync(workspace, canon)
 
 
-def blast_radius(canon: str, qualified_name: str, max_hops: int) -> dict[str, Any]:
-    """MODULES 3+4. Read-only query (use graph.ro_query) on graph `canon`.
+def blast_radius(canon: str, qname: str, max_hops: int, db=None, max_items: int = 25) -> dict[str, Any]:
+    """MODULE 3. Read-only multi-hop query. Implemented in preflight/queries.py."""
+    from preflight.queries import blast_radius as _blast
 
-    Return: {"found": bool, "target": str,
-             "hops": [{"hop": 1, "callers": [{"name", "file", "line"}]}],
-             "mocking_tests": [{"test", "file", "line", "mocks"}],
-             "hub_score": float | None}
-    """
-    return {
-        "status": "stub",
-        "found": False,
-        "target": qualified_name,
-        "hops": [],
-        "mocking_tests": [],
-        "hub_score": None,
-    }
+    return _blast(canon, qname, max_hops, db=db, max_items=max_items)

@@ -1,0 +1,77 @@
+[
+ {
+  "experiment": "E1 make context and output_dir required",
+  "predicted": 9,
+  "actual": 9,
+  "both": 9,
+  "precision": 1.0,
+  "recall": 1.0,
+  "false_positives": [],
+  "missed": [],
+  "pytest": "9 failed, 370 passed, 4 skipped, 2 warnings in 3.35s",
+  "score": 11.25
+ },
+ {
+  "experiment": "E2 rename generate_files (definition only)",
+  "predicted": 94,
+  "actual": 94,
+  "both": 93,
+  "precision": 0.989,
+  "recall": 0.989,
+  "false_positives": [
+   "tests.test_generate_hooks.test_run_shell_hooks_win"
+  ],
+  "missed": [
+   "tests.test_cookiecutter_invocation.test_should_invoke_main"
+  ],
+  "pytest": "37 failed, 261 passed, 4 skipped, 2 warnings, 13 errors in 2.10s",
+  "score": 41.0
+ },
+ {
+  "experiment": "E3 add required param to read_user_variable",
+  "predicted": 2,
+  "actual": 2,
+  "both": 2,
+  "precision": 1.0,
+  "recall": 1.0,
+  "false_positives": [],
+  "missed": [],
+  "pytest": "2 failed, 377 passed, 4 skipped, 2 warnings in 3.82s",
+  "score": 2.5
+ },
+ {
+  "experiment": "E4 add required param to replay.dump",
+  "predicted": 42,
+  "actual": 32,
+  "both": 31,
+  "precision": 0.738,
+  "recall": 0.969,
+  "false_positives": [
+   "tests.replay.test_replay.test_raise_on_invalid_mode",
+   "tests.test_cli.test_cli_exit_on_noinput_and_replay",
+   "tests.test_cli.test_cli_extra_context_invalid_format",
+   "tests.test_cli.test_cli_help",
+   "tests.test_cli.test_cli_version",
+   "tests.test_cli.test_cli_with_json_decoding_error"
+  ],
+  "missed": [
+   "tests.test_cookiecutter_invocation.test_should_invoke_main"
+  ],
+  "pytest": "40 failed, 339 passed, 4 skipped, 2 warnings in 3.47s",
+  "score": 8.25
+ },
+ {
+  "experiment": "E5 rename make_sure_path_exists (definition only)",
+  "predicted": 172,
+  "actual": 173,
+  "both": 172,
+  "precision": 1.0,
+  "recall": 0.994,
+  "false_positives": [],
+  "missed": [
+   "tests.test_cookiecutter_invocation.test_should_invoke_main"
+  ],
+  "pytest": "3 failed, 126 passed, 3 skipped, 1 warning, 32 errors in 2.43s",
+  "score": 8.75
+ }
+]

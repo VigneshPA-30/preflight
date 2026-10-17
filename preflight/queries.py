@@ -5,6 +5,7 @@ Everything here uses ro_query. Nothing here changes the graph.
 """
 from __future__ import annotations
 
+import difflib
 import logging
 import time
 from typing import Any
@@ -24,6 +25,29 @@ def _graph(db, canon: str):
 
 def _rows(g, cypher: str, **params) -> list[list[Any]]:
     return g.ro_query(cypher, params=params).result_set
+
+
+Q_REACH_PATHS = ("UNWIND $cs AS cq MATCH (c:Function {qname: cq}) "
+                 "MATCH p=(t:Function {is_test:true})-[:CALLS|REFERENCES*1..4]->(c) "
+                 "RETURN cq, t.qname, [r IN relationships(p) | [type(r), r.ns, endNode(r).qname]] LIMIT 100000")
+Q_ALL_MOCKS = "MATCH (t:Function)-[m:MOCKS]->(f:Function) RETURN t.qname, f.qname, m.ns"
+
+
+def reach_map(g, callers: list[str]) -> dict[str, set[str]]:
+    """Which tests REALLY run each caller?
+
+    A test reaches a caller through a path of calls/references (up to 4 steps), but only if the test
+    does not mock one of the calls on that path: a mocked call replaces everything behind it."""
+    out: dict[str, set[str]] = {c: set() for c in callers}
+    if not callers:
+        return out
+    mocked = {(t, f, ns) for t, f, ns in _rows(g, Q_ALL_MOCKS)}
+    for cq, t, edges in _rows(g, Q_REACH_PATHS, cs=callers):
+        if t in out[cq]:
+            continue
+        if not any(kind == "CALLS" and (t, callee, ns) in mocked for kind, ns, callee in edges):
+            out[cq].add(t)
+    return out
 
 
 def suggest_names(g, qname: str, limit: int = 5) -> list[str]:
@@ -47,7 +71,13 @@ def suggest_names(g, qname: str, limit: int = 5) -> list[str]:
             head += 1
         return (-tail_run, -head, len(name))
 
-    return [r[0] for r in sorted(rows, key=lambda r: score(r[0]))[:limit]]
+    found = [r[0] for r in sorted(rows, key=lambda r: score(r[0]))[:limit]]
+    if len(found) < limit:   # typos: fuzzy match against every function name
+        every = [r[0] for r in _rows(g, "MATCH (f:Function) RETURN f.qname")]
+        for name in difflib.get_close_matches(qname, every, n=limit, cutoff=0.8):
+            if name not in found:
+                found.append(name)
+    return found[:limit]
 
 
 def hub_info(g, canon: str, qname: str) -> dict[str, Any] | None:
@@ -98,7 +128,8 @@ def blast_radius(canon: str, qname: str, max_hops: int = 5, db=None, max_items: 
            "RETURN c.qname, c.file, c.line, c.is_test, c.in_test_file, min(length(p)) AS hop "
            "ORDER BY hop, c.qname", q=qname)
     prod = [r for r in callers if not r[4] and r[0] != qname]
-    tests = [r for r in callers if r[3]]
+    tests = _rows(g, f"MATCH (t:Function {{is_test:true}})-[:CALLS|REFERENCES*1..{max_hops}]->(f:Function {{qname:$q}}) "
+                     "RETURN DISTINCT t.qname ORDER BY t.qname", q=qname)   # tests also reach code through callbacks/fixtures
 
     # 2. direct call sites (these are what a signature change breaks)
     sites: dict[str, list[dict]] = {}
@@ -124,12 +155,7 @@ def blast_radius(canon: str, qname: str, max_hops: int = 5, db=None, max_items: 
 
     # 4. for each direct production caller: how many tests really exercise it?
     direct = [r for r in prod if r[5] == 1]
-    reach: dict[str, set[str]] = {}
-    if direct:
-        for cq, ts in _rows(g, "UNWIND $cs AS cq MATCH (c:Function {qname: cq}) "
-                               "OPTIONAL MATCH (t:Function {is_test:true})-[:CALLS*1..4]->(c) "
-                               "RETURN cq, collect(DISTINCT t.qname)", cs=[r[0] for r in direct]):
-            reach[cq] = set(ts)
+    reach = reach_map(g, [r[0] for r in direct]) if direct else {}
     mocked_by: dict[str, set[str]] = {}
     for m in mocking:
         for h in m.get("hides", []):

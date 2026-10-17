@@ -19,7 +19,7 @@ from .pipeline import sync_workspace
 TOP_LYING = (
     "MATCH (t:Function {is_test:true})-[m:MOCKS]->(f:Function) "
     "MATCH (c:Function)-[k:CALLS]->(f) "
-    "WHERE k.ns = m.ns AND (c.qname = t.qname OR (t)-[:CALLS*1..4]->(c)) "
+    "WHERE k.ns = m.ns AND (c.qname = t.qname OR (t)-[:CALLS|REFERENCES*1..4]->(c)) "
     "RETURN f.qname AS fn, count(DISTINCT t) AS tests, count(DISTINCT c) AS callers "
     "ORDER BY tests DESC, fn LIMIT $n"
 )
@@ -49,15 +49,35 @@ def main() -> None:
 
     g = db.select_graph(canon)
     if a.target:
-        print(f"\n== tests that mock {a.target} ==")
-        for r in g.ro_query("MATCH (t:Function)-[m:MOCKS]->(f:Function {qname:$q}) "
-                            "RETURN t.qname, m.via, m.scope, m.file, m.line ORDER BY t.qname", params={"q": a.target}).result_set:
-            print(f"  {r[0]}  [{r[1]}, {r[2]}]  {r[3]}:{r[4]}")
-        print(f"\n== LYING MOCKS for {a.target} ==")
-        rows = g.ro_query(S.Q_LYING_MOCKS, params={"q": a.target}).result_set
-        for t, tf, ml, mf, via, scope, c, cf, cl in rows:
-            print(f"  {t}\n      mocks it ({via}, {scope}) at {mf}:{ml}\n      but reaches caller {c} ({cf}:{cl})")
-        print(f"  -> {len(rows)} lying path(s)")
+        from preflight.queries import blast_radius
+        r = blast_radius(canon, a.target, max_hops=5, db=db)
+        if not r["found"]:
+            print(f"\nnot found: {a.target}\n  did you mean: {r['suggestions']}")
+            return
+        sm, fn = r["summary"], r["function"]
+        print(f"\n== blast radius: {a.target} ==")
+        print(f"  defined at {fn['file']}:{fn['line']}   params={fn['params']} required={fn['required']}")
+        print(f"  {sm['direct_callers']} direct callers, {sm['affected_functions']} affected functions in "
+              f"{sm['affected_files']} files, {sm['tests_reaching']} tests reach it ({r['elapsed_ms']} ms)")
+        if r["hub"]:
+            print(f"  hub rank {r['hub']['rank']} of {r['hub']['of']} (PageRank {r['hub']['pagerank']})")
+        for h in r["hops"]:
+            print(f"  hop {h['hop']}: {h['count']} function(s)")
+            for c in h["callers"][:6]:
+                extra = ""
+                if h["hop"] == 1:
+                    lines = ",".join(str(x["line"]) for x in c["call_sites"])
+                    flag = "  <-- NO REAL TEST EXERCISES THIS CALL" if c["masked"] else ("  (untested)" if c["untested"] else "")
+                    extra = f"  calls at line {lines}; {c['tests_reaching']} tests reach it, {c['tests_mocking']} mock it{flag}"
+                else:
+                    extra = "  via " + " -> ".join(x.rsplit(".", 1)[-1] for x in c["via"])
+                print(f"      {c['name']} ({c['file']}:{c['line']}){extra}")
+        print(f"\n== tests that mock it: {sm['mocking_tests']}  (lying: {sm['lying_tests']}) ==")
+        for m in r["mocking_tests"][:8]:
+            tag = "LIES" if m["lying"] else "ok  "
+            hides = ", ".join(f"{h['caller'].rsplit('.', 1)[-1]}:{h['line']}" for h in m.get("hides", []))
+            print(f"  [{tag}] {m['test']}  ({m['via']}, {m['scope']}) {m['mock_file']}:{m['mock_line']}"
+                  + (f"\n          hides: {hides}" if hides else ""))
     else:
         print(f"\n== functions with the most lying-mock tests (top {a.top}) ==")
         for fn, tests, callers in g.ro_query(TOP_LYING, params={"n": a.top}).result_set:

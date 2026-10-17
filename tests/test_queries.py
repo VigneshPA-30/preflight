@@ -73,6 +73,36 @@ def test_mocking_tests_are_flagged_and_grouped(nuance):
     assert len(r["mocking_tests"]) == len({(m["test"], m["mock_file"], m["mock_line"]) for m in r["mocking_tests"]})
 
 
+def test_reach_follows_references(tmp_path, db):
+    files = {
+        "pkg/__init__.py": "", "pkg/cli.py": "from pkg import core\ndef main():\n    return core.work()\n",
+        "pkg/core.py": "def work(): ...\n",
+        "tests/conftest.py": "import pytest\nfrom pkg.cli import main\n@pytest.fixture\ndef runner():\n    return lambda: invoke(main)\n",
+        "tests/test_cli.py": "def test_it(runner):\n    runner()\n",
+    }
+    sync_workspace(make(tmp_path, files), "canon_ref", db=db)
+    r = blast_radius("canon_ref", "pkg.core.work", db=db)
+    main = r["hops"][0]["callers"][0]
+    assert main["name"] == "pkg.cli.main" and main["untested"] is False and main["tests_reaching"] == 1
+    assert r["tests_reaching"] == ["tests.test_cli.test_it"]
+
+
+def test_mock_in_the_middle_cuts_the_path(tmp_path, db):
+    """A test that mocks an intermediate call never reaches the code behind it (found by real-suite validation)."""
+    files = {
+        "pkg/__init__.py": "", "pkg/core.py": "def work(): ...\n",
+        "pkg/mid.py": "from pkg import core\ndef mid():\n    return core.work()\n",
+        "pkg/top.py": "from pkg import mid\ndef top():\n    return mid.mid()\n",
+        "tests/test_paths.py": "from unittest import mock\nfrom pkg import top\n"
+                               "def test_real():\n    top.top()\n"
+                               "def test_cut():\n    with mock.patch('pkg.mid.mid'):\n        top.top()\n",
+    }
+    sync_workspace(make(tmp_path, files), "canon_cut", db=db)
+    r = blast_radius("canon_cut", "pkg.core.work", db=db)
+    mid = r["hops"][0]["callers"][0]
+    assert mid["name"] == "pkg.mid.mid" and mid["tests_reaching"] == 1      # only test_real runs it for real
+
+
 def test_not_found_gives_suggestions(nuance):
     r = br(nuance, "compute")
     assert r["found"] is False and "pkg.util.compute" in r["suggestions"]

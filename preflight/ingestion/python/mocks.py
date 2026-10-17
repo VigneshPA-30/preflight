@@ -22,16 +22,18 @@ SETUP_NAMES = {"setUp", "setUpClass", "setup_method", "setup_class", "setup"}
 
 
 def dotted(node: ast.AST | None) -> str | None:
-    """'a.b.c' for a Name/Attribute chain. 'super().x' is supported. Else None."""
+    """'a.b.c' for a Name/Attribute chain. 'super().x' and 'Foo(args).x' are supported. Else None."""
     parts: list[str] = []
     while isinstance(node, ast.Attribute):
         parts.append(node.attr)
         node = node.value
     if isinstance(node, ast.Name):
         parts.append(node.id)
-    elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-          and node.func.id == "super"):
-        parts.append("super()")
+    elif isinstance(node, ast.Call):          # super().x  or  Foo(args).x
+        inner = dotted(node.func)
+        if inner is None:
+            return None
+        parts.append(inner + "()")
     else:
         return None
     return ".".join(reversed(parts))

@@ -11,7 +11,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from posixpath import dirname
 
-from preflight.schema import CallRec, FunctionRec, ImportRec, MockRec, ModuleRec
+from preflight.schema import CallRec, FunctionRec, ImportRec, MockRec, ModuleRec, RefRec
 
 from .extract import ClassFacts, FileFacts, FuncFacts, RawCall
 from .mocks import RawMock
@@ -24,6 +24,7 @@ class Resolved:
     imports: list[ImportRec] = field(default_factory=list)
     calls: list[CallRec] = field(default_factory=list)
     mocks: list[MockRec] = field(default_factory=list)
+    refs: list[RefRec] = field(default_factory=list)
     stats: Counter = field(default_factory=Counter)
 
 
@@ -171,6 +172,8 @@ class World:
             return ("external", "") if self._alias_is_external(file, tfirst) else ("dynamic", "")
         if first in ff.rec.params or first in ff.rec.kwonly:
             return "dynamic", ""
+        if any("()" in p for p in prefix):
+            return "dynamic", ""
         base = self.bind(file, first)
         if base is None:
             return "dynamic", ""          # builtin or local variable
@@ -183,8 +186,20 @@ class World:
 
     def resolve_call(self, rc: RawCall, ff: FuncFacts, file: FileFacts) -> tuple[str, str, str]:
         """-> (status, callee_qname, ns). status: resolved|external|unresolved|dynamic|noinit"""
-        parts = rc.expr.split(".")
         module = file.src.module
+        if "()" in rc.expr and not rc.expr.startswith("super()"):      # Foo(args).method(...)
+            recv, _, rest = rc.expr.partition("().")
+            if not rest or "." in rest or "()" in rest or "()" in recv:
+                return "dynamic", "", ""
+            r = self.resolve_expr(recv, module)
+            if r and r[0] == "class":
+                m = self.find_method(r[1], rest)
+                if m:
+                    return "resolved", m, m
+                return ("external" if self.has_external_base(r[1]) else "unresolved"), "", ""
+            first = recv.split(".")[0]
+            return ("external" if self._alias_is_external(file, first) else "dynamic"), "", ""
+        parts = rc.expr.split(".")
         if len(parts) == 1:
             n = parts[0]
             if n in ff.rec.params or n in ff.rec.kwonly:
@@ -326,8 +341,21 @@ def resolve_all(files: list[FileFacts]) -> Resolved:
     resolved, unresolved = st["calls_resolved"], st["calls_unresolved"]
     st["internal_resolution_pct"] = round(100 * resolved / max(1, resolved + unresolved), 1)
 
-    # ---- mocks
+    # ---- references: functions used as values in test files (callbacks, click runners)
+    have: set[tuple[str, str]] = set()
+    for f in world.files.values():
+        for rr in f.refs:
+            ff = world.functions.get(rr.caller)
+            if ff is None:
+                continue
+            status, callee, _ns = world.resolve_call(rr, ff, f)
+            if status == "resolved" and callee != rr.caller and (rr.caller, callee) not in have:
+                have.add((rr.caller, callee))
+                out.refs.append(RefRec(src=rr.caller, dst=callee, line=rr.line))
+
+    # ---- mocks (also adds test -> fixture links)
     _resolve_mocks(world, out)
+    st["refs"] = len(out.refs)
     return out
 
 
@@ -370,6 +398,18 @@ def _resolve_mocks(world: World, out: Resolved) -> None:
             if not d:
                 return None
             d = dirname(d)
+
+    # a test (or fixture) that requests a fixture by name reaches it
+    have = {(r.src, r.dst) for r in out.refs}
+    for tq, ff in world.functions.items():
+        if not ff.rec.in_test_file:
+            continue
+        f = world.file_of_func[tq]
+        for name in ff.request_names + ff.use_fixtures:
+            dep = find_fixture(name, f, ff.cls)
+            if dep and dep.rec.qname != tq and (tq, dep.rec.qname) not in have:
+                have.add((tq, dep.rec.qname))
+                out.refs.append(RefRec(src=tq, dst=dep.rec.qname, line=ff.rec.line))
 
     def autouse_fixtures(f: FileFacts, cls: str) -> list[FuncFacts]:
         found = [fx for (mod, c, _n), fx in fixtures.items()

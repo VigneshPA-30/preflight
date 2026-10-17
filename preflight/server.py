@@ -52,22 +52,23 @@ WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint
 
 # ---------- input models (this is the "mutation list" contract) ----------
 class Mutation(BaseModel):
-    kind: Literal["change_params", "change_return", "rename", "make_async"]
-    target: str = Field(description="Qualified function name, e.g. 'pkg.mod.func'")
+    kind: Literal["change_params", "rename"] = Field(
+        description="change_params: new parameter list. rename: new function name.")
+    target: str = Field(description="Qualified function name, e.g. 'pkg.mod.func' or 'pkg.mod.Class.method'")
     new_params: list[str] | None = Field(
-        None, description="New parameter names in order (for change_params). [] means no parameters."
-    )
-    new_return: str | None = Field(None, description="New return type text (for change_return)")
-    new_name: str | None = Field(None, description="New function name (for rename)")
+        None, description="For change_params: the COMPLETE new parameter list, in order, without self/cls. "
+        "Append '=' to a name that has a default ('debug='). Use '*' before keyword-only parameters, "
+        "'*args' and '**kwargs' for variadics. Example: ['path', 'mode=', '*', 'strict=']. [] means no parameters.")
+    new_name: str | None = Field(None, description="For rename: the new function name (no module path).")
+    keep_alias: bool = Field(False, description="For rename: keep the old name working as a deprecated alias.")
 
     @model_validator(mode="after")
     def _check(self) -> "Mutation":
         if not _QNAME.match(self.target):
             raise ValueError(f"target '{self.target}' is not a qualified Python name")
-        need = {"change_params": "new_params", "change_return": "new_return", "rename": "new_name"}
-        field = need.get(self.kind)
-        if field and getattr(self, field) is None:
-            raise ValueError(f"kind '{self.kind}' needs '{field}'")
+        need = {"change_params": "new_params", "rename": "new_name"}
+        if getattr(self, need[self.kind]) is None:
+            raise ValueError(f"kind '{self.kind}' needs '{need[self.kind]}'")
         return self
 
 
@@ -97,6 +98,21 @@ def _resolve_workspace(path: str | None) -> Path:
     if roots and not any(p.is_relative_to(Path(r).resolve()) for r in roots):
         raise ValueError(f"{p} is outside PREFLIGHT_ALLOWED_ROOTS")
     return p
+
+
+AUTOSYNC = os.environ.get("PREFLIGHT_AUTOSYNC", "1") != "0"
+
+
+def _ensure_graph(ws: Path) -> tuple[str, dict[str, Any]]:
+    """Make sure the graph exists and is fresh. A sync with no changes is cheap (it only re-hashes)."""
+    global _active_workspace
+    canon = canon_name(ws)
+    sync: dict[str, Any] = {}
+    if AUTOSYNC or not graph_exists(canon):
+        r = core.sync_workspace(ws, canon)
+        sync = {"status": r["status"], "files_changed": r["files_changed"]}
+    _active_workspace = ws
+    return canon, sync
 
 
 def _check_name(name: str) -> None:
@@ -170,19 +186,9 @@ def inspect_blast_radius(function_name: str, max_hops: int = 5,
         _check_name(function_name)
         max_hops = max(1, min(int(max_hops), 8))
         ws = _resolve_workspace(workspace_path)
-        canon = canon_name(ws)
-        if not graph_exists(canon):
-            return _fail("workspace not in graph", "run sync_workspace_graph first")
-        t = time.perf_counter()
-        res = core.blast_radius(canon, function_name, max_hops)
-        truncated = 0
-        for hop in res.get("hops", []):
-            hop["callers"], cut = _cap(hop["callers"])
-            truncated += cut
-        res["mocking_tests"], cut = _cap(res.get("mocking_tests", []))
-        truncated += cut
-        return {"ok": True, **res, "truncated_items": truncated,
-                "elapsed_ms": round((time.perf_counter() - t) * 1000, 2)}
+        canon, sync = _ensure_graph(ws)
+        res = core.blast_radius(canon, function_name, max_hops, max_items=MAX_ITEMS)
+        return {"ok": True, **res, "synced": sync}
     except ValueError as exc:
         return _fail(str(exc))
     except Exception as exc:  # noqa: BLE001
@@ -205,24 +211,29 @@ def simulate_refactor_decisions(target_func: str, candidates: list[Candidate],
         if len(set(names)) != len(names):
             return _fail("candidate names must be unique")
         ws = _resolve_workspace(workspace_path)
-        canon = canon_name(ws)
-        if not graph_exists(canon):
-            return _fail("workspace not in graph", "run sync_workspace_graph first")
+        canon, sync = _ensure_graph(ws)
         run_id = uuid.uuid4().hex[:8]
         parallel = os.environ.get("PREFLIGHT_PARALLEL", "1") != "0"
         out = simulate.run_simulation(
             canon, target_func, [c.model_dump() for c in candidates], run_id, parallel
         )
-        for r in out["ranked"]:  # compact the output
-            for key in ("broken_callers", "lying_mocks", "files_to_edit"):
+        for r in out["ranked"]:  # keep the output small: it goes into the agent's context window
+            is_winner = r["candidate"] == out["winner"]
+            for key, n in (("broken_callers", 25 if is_winner else 5), ("lying_mocks", 15 if is_winner else 3)):
                 if key in r:
-                    r[key], cut = _cap(r[key])
+                    r[key], cut = _cap(r[key], n)
                     if cut:
-                        r[f"{key}_truncated"] = cut
-        out["checklist"], cut = _cap(out["checklist"], 60)
+                        r[f"{key}_omitted"] = cut
+            if "expected_failing_tests" in r:
+                r["expected_failing_tests"], cut = _cap(r["expected_failing_tests"], 40 if is_winner else 0)
+                if cut:
+                    r["expected_failing_tests_omitted"] = cut
+            if not is_winner and "files_to_edit" in r:
+                r["files_to_edit_count"] = len(r.pop("files_to_edit"))
+        out["checklist"], cut = _cap(out["checklist"], 40)
         if cut:
-            out["checklist_truncated"] = cut
-        return {"ok": True, "target": target_func, **out}
+            out["checklist_files_omitted"] = cut
+        return {"ok": True, "target": target_func, **out, "synced": sync}
     except ValueError as exc:
         return _fail(str(exc))
     except Exception as exc:  # noqa: BLE001

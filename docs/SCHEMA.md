@@ -15,9 +15,9 @@ graph LR
 | Label | Key properties |
 |---|---|
 | `Module` | `qname`, `file`, `sha256` |
-| `Function` | `qname` (unique key), `name`, `module`, `file`, `line`, `end_line`, `params`, `kwonly`, `required`, `has_varargs`, `has_varkw`, `returns`, `is_async`, `is_method`, `is_test`, `class_name` |
+| `Function` | `qname` (unique key), `name`, `module`, `file`, `line`, `end_line`, `params`, `kwonly`, `required`, `has_varargs`, `has_varkw`, `returns`, `is_async`, `is_method`, `is_test`, `in_test_file`, `class_name` |
 
-A test is a `Function` with `is_test = true`.
+A test is a `Function` with `is_test = true`. `in_test_file` marks everything that lives in a test file (tests, helpers, fixtures), so production code can be told apart.
 For methods, `params` leaves out the leading `self` or `cls`.
 
 ## Relationships
@@ -27,6 +27,7 @@ For methods, `params` leaves out the leading `self` or `cls`.
 | `(Function)-[:DEFINED_IN]->(Module)` | none | where the function lives |
 | `(Module)-[:IMPORTS]->(Module)` | none | file dependency |
 | `(Function)-[:CALLS]->(Function)` | `line`, `n_pos`, `kw_names`, `dynamic_args`, `ns` | one call site |
+| `(Function)-[:REFERENCES]->(Function)` | `line` | a test-file function uses another as a value (`runner.invoke(main)`) or requests it as a fixture |
 | `(Function)-[:MOCKS]->(Function)` | `line`, `via`, `ns`, `scope`, `file` | a test replaces this function |
 
 ## Indexes
@@ -47,7 +48,7 @@ Lying mock (a test mocks `f`, reaches a caller of `f`, and that caller's call go
 ```cypher
 MATCH (t:Function {is_test:true})-[m:MOCKS]->(f:Function {qname:$q})
 MATCH (c:Function)-[k:CALLS]->(f)
-WHERE k.ns = m.ns AND (c.qname = t.qname OR (t)-[:CALLS*1..4]->(c))
+WHERE k.ns = m.ns AND (c.qname = t.qname OR (t)-[:CALLS|REFERENCES*1..4]->(c))
 RETURN DISTINCT t.qname, m.line, m.scope, c.qname, k.line
 ```
 

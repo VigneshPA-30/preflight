@@ -35,6 +35,7 @@ class Rel:
     IMPORTS = "IMPORTS"        # (Module)-[:IMPORTS]->(Module)
     CALLS = "CALLS"            # (Function)-[:CALLS]->(Function), one per call site
     MOCKS = "MOCKS"            # (Function test)-[:MOCKS]->(Function)
+    REFERENCES = "REFERENCES"  # a test-file function uses another function as a VALUE or fixture (not a call)
 
 
 # ---------- the namespace rule (this is what makes lying-mock detection precise) ----------
@@ -77,6 +78,7 @@ class FunctionRec:
     is_method: bool = False
     is_test: bool = False
     class_name: str = ""
+    in_test_file: bool = False                    # lives in a test file (tests, helpers, fixtures)
 
     def to_props(self) -> dict[str, Any]:
         return asdict(self)
@@ -100,6 +102,18 @@ class CallRec:
     kw_names: list[str] = field(default_factory=list)  # keyword names used at the call
     dynamic_args: bool = False                    # call uses *x or **x: arity cannot be checked
     ns: str = ""                                  # NAMESPACE KEY the call looked the name up in (see below)
+
+    def to_props(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class RefRec:
+    """Not a call: `runner.invoke(main)` passes `main` as a value, a test requests a fixture by name.
+    Tests reach code through these links, so reach queries follow CALLS and REFERENCES."""
+    src: str
+    dst: str
+    line: int = 0
 
     def to_props(self) -> dict[str, Any]:
         return asdict(self)
@@ -161,6 +175,11 @@ LOAD_CALLS = (
     f"CREATE (a)-[:{Rel.CALLS} {{line: r.line, n_pos: r.n_pos, kw_names: r.kw_names, "
     "dynamic_args: r.dynamic_args, ns: r.ns}]->(b)"
 )
+LOAD_REFS = (
+    "UNWIND $rows AS r "
+    f"MATCH (a:{Label.FUNCTION} {{qname: r.src}}), (b:{Label.FUNCTION} {{qname: r.dst}}) "
+    f"CREATE (a)-[:{Rel.REFERENCES} {{line: r.line}}]->(b)"
+)
 LOAD_MOCKS = (
     "UNWIND $rows AS r "
     f"MATCH (t:{Label.FUNCTION} {{qname: r.test}}), (f:{Label.FUNCTION} {{qname: r.target}}) "
@@ -175,7 +194,7 @@ LOAD_MOCKS = (
 Q_LYING_MOCKS = (
     f"MATCH (t:{Label.FUNCTION} {{is_test: true}})-[m:{Rel.MOCKS}]->(f:{Label.FUNCTION} {{qname: $q}}) "
     f"MATCH (c:{Label.FUNCTION})-[k:{Rel.CALLS}]->(f) "
-    f"WHERE k.ns = m.ns AND (c.qname = t.qname OR (t)-[:{Rel.CALLS}*1..4]->(c)) "
+    f"WHERE k.ns = m.ns AND (c.qname = t.qname OR (t)-[:{Rel.CALLS}|{Rel.REFERENCES}*1..4]->(c)) "
     "RETURN DISTINCT t.qname AS test, t.file AS test_file, m.line AS mock_line, m.file AS mock_file, "
     "m.via AS via, m.scope AS scope, c.qname AS caller, c.file AS caller_file, k.line AS call_line "
     "ORDER BY test, caller"

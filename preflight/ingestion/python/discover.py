@@ -10,7 +10,7 @@ SKIP_DIRS = {
     "venv", "env", "htmlcov",
     "vendor", "vendored", "_vendor", "third_party", "thirdparty",   # copied-in libraries
 }
-TEST_DIRS = {"test", "tests", "testing"}
+TEST_DIRS = {"test", "tests", "testing", "integration", "e2e"}
 MAX_BYTES = 1_000_000
 
 

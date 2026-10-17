@@ -59,6 +59,7 @@ class FileFacts:
     classes: list[ClassFacts] = field(default_factory=list)
     functions: list[FuncFacts] = field(default_factory=list)
     calls: list[RawCall] = field(default_factory=list)
+    refs: list[RawCall] = field(default_factory=list)          # names used as values (test files only)
     mocks: list[RawMock] = field(default_factory=list)         # owned by a function
     class_mocks: dict[str, list[RawMock]] = field(default_factory=dict)  # owned by a class
     dynamic_calls: int = 0                                     # callee is not a plain dotted name
@@ -220,7 +221,7 @@ class _Extractor:
             returns=(ast.unparse(node.returns) if node.returns is not None else ""),
             is_async=isinstance(node, ast.AsyncFunctionDef),
             is_method=cls is not None, is_test=is_test,
-            class_name=cls.name if cls else "",
+            class_name=cls.name if cls else "", in_test_file=src.is_test_file,
         )
         ff = FuncFacts(rec=rec, cls=cls.qname if cls else "", fixture_name=fixture_name,
                        autouse=autouse, use_fixtures=use_fx)
@@ -254,7 +255,18 @@ class _Extractor:
             if t:
                 ff.var_types[a.arg] = t
         for stmt in node.body:
-            for sub in ast.walk(stmt):
+            nodes = list(ast.walk(stmt))
+            if self.src.is_test_file:   # `runner.invoke(main)`: `main` is used as a value, not called
+                call_funcs = {id(n.func) for n in nodes if isinstance(n, ast.Call)}
+                inner = {id(n.value) for n in nodes if isinstance(n, ast.Attribute)}
+                for n in nodes:
+                    if (isinstance(n, (ast.Name, ast.Attribute)) and isinstance(n.ctx, ast.Load)
+                            and id(n) not in call_funcs and id(n) not in inner):
+                        e = dotted(n)
+                        if e:
+                            facts.refs.append(RawCall(caller=qname, expr=e, line=n.lineno, n_pos=0,
+                                                      kw_names=[], dynamic_args=False))
+            for sub in nodes:
                 if isinstance(sub, ast.Call):
                     found = classify(sub, qname, "body")
                     if found:

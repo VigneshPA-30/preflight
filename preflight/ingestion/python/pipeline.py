@@ -57,6 +57,7 @@ def load_into_graph(db, canon: str, result: IngestResult, root: Path) -> float:
     S.load_batch(g, S.LOAD_DEFINED_IN, r.functions)
     S.load_batch(g, S.LOAD_IMPORTS, r.imports)
     S.load_batch(g, S.LOAD_CALLS, r.calls)
+    S.load_batch(g, S.LOAD_REFS, r.refs)
     S.load_batch(g, S.LOAD_MOCKS, r.mocks)
     g.query(f"CREATE (:{META} {{name: 'workspace', hash: $h, root: $root}})",
             params={"h": result.workspace_hash, "root": str(root)})
@@ -85,6 +86,7 @@ def graph_counts(db, canon: str) -> dict[str, int]:
         "edges": q("MATCH ()-[r]->() RETURN count(r)"),
         "calls": q("MATCH ()-[r:CALLS]->() RETURN count(r)"),
         "mocks": q("MATCH ()-[r:MOCKS]->() RETURN count(r)"),
+        "refs": q("MATCH ()-[r:REFERENCES]->() RETURN count(r)"),
     }
 
 

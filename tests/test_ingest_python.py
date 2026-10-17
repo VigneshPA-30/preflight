@@ -331,3 +331,45 @@ def test_star_import_and_vendor_skip(tmp_path):
     assert ("pkg.use.go", "pkg.impl.build") in got
     assert ("pkg.use.go", "pkg.impl.Engine.__init__") in got
     assert not [f for f in r.functions if "vendor" in f.qname]
+
+
+def test_tests_reach_code_through_values_and_fixtures(tmp_path):
+    """click's CliRunner: `runner.invoke(main)` passes main as a value; 62 cookiecutter tests do this."""
+    r = ingest(tmp_path, {
+        "pkg/__init__.py": "",
+        "pkg/cli.py": "from pkg import core\ndef main():\n    return core.work()\n",
+        "pkg/core.py": "def work(): ...\n",
+        "tests/conftest.py": """
+            import pytest
+            from click.testing import CliRunner
+            from pkg.cli import main
+            @pytest.fixture
+            def cli_runner():
+                def run(*args):
+                    return CliRunner().invoke(main, args)       # main used as a value, not called
+                return run
+        """,
+        "tests/test_cli.py": """
+            def test_it(cli_runner):
+                cli_runner("--x")
+        """,
+    })
+    refs = {(x.src, x.dst) for x in r.refs}
+    assert ("tests.conftest.cli_runner", "pkg.cli.main") in refs      # fixture -> function used as a value
+    assert ("tests.test_cli.test_it", "tests.conftest.cli_runner") in refs   # test -> fixture it requests
+
+
+def test_constructor_receiver_calls(tmp_path):
+    """Tests write  Call(x).make_context()  all the time."""
+    r = ingest(tmp_path, {
+        "pkg/__init__.py": "",
+        "pkg/task.py": "class Call:\n    def __init__(self, t): ...\n    def make_context(self): ...\n",
+        "tests/test_task.py": "from pkg.task import Call\nfrom pkg import task\n"
+                              "def test_a():\n    Call(1).make_context()\n"
+                              "def test_b():\n    task.Call(2).make_context()\n"
+                              "def test_c():\n    Call(3).missing().deeper()\n",
+    })
+    got = {(c.caller, c.callee) for c in r.calls}
+    for t in ("test_a", "test_b"):
+        assert (f"tests.test_task.{t}", "pkg.task.Call.make_context") in got
+        assert (f"tests.test_task.{t}", "pkg.task.Call.__init__") in got
