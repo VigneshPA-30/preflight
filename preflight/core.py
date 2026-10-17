@@ -8,26 +8,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from preflight.db import get_db
 
 
 def sync_workspace(workspace: Path, canon: str) -> dict[str, Any]:
-    """MODULE 2. Parse .py files with `ast`, hash files (SHA-256), and load
-    only changed files into graph `canon`.
+    """MODULE 2 (Python). Parse with `ast`, resolve names, rebuild the graph.
+    Skips all work when no file changed (workspace hash)."""
+    from preflight.ingestion.python.pipeline import sync_workspace as _sync
 
-    Return: {"files_total", "files_changed", "nodes", "edges",
-             "unresolved_call_pct"}
-    """
-    # Stub: only make sure the canonical graph exists, so the rest of the chain runs.
-    get_db().select_graph(canon).query("MERGE (:Meta {name: 'placeholder'})")
-    return {
-        "status": "stub",
-        "files_total": 0,
-        "files_changed": 0,
-        "nodes": 0,
-        "edges": 0,
-        "unresolved_call_pct": None,
-    }
+    return _sync(workspace, canon)
 
 
 def blast_radius(canon: str, qualified_name: str, max_hops: int) -> dict[str, Any]:
