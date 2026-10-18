@@ -3,8 +3,15 @@
 For each experiment:  predict (graph simulation)  ->  really edit a COPY of the repo  ->  run the real test suite
 ->  compare. Nothing in your checkout is changed.
 
-    uv run python scripts/validate_prediction.py ~/graphhacks/targets/cookiecutter /path/to/python-with-test-deps
-The second argument is a Python that has the target's test dependencies installed (see docs/VALIDATION.md).
+    uv run python scripts/validate_prediction.py <project> <python-with-the-project's-test-dependencies> [experiments.json]
+
+Without experiments.json it runs the 5 built-in experiments on cookiecutter. To check YOUR project, give a JSON file:
+    [{"name": "make y required",
+      "target": "mypkg.util.compute",
+      "mutation": {"kind": "change_params", "target": "mypkg.util.compute", "new_params": ["x", "y"]},
+      "edit": ["mypkg/util.py", "def compute(x, y=0):", "def compute(x, y):"]}]
+"edit" is [file in the project, exact old text (must appear once), new text]. Make it the same change as the mutation.
+See docs/VALIDATION.md.
 """
 from __future__ import annotations
 
@@ -87,7 +94,8 @@ def main() -> None:
     all_tests = {q for s in tests_in_file.values() for q in s}
 
     results = []
-    for ex in EXPERIMENTS:
+    experiments = json.loads(Path(sys.argv[3]).read_text()) if len(sys.argv) > 3 else EXPERIMENTS
+    for ex in experiments:
         sim = run_simulation(canon, ex["target"], [{"name": "x", "mutations": [ex["mutation"]]}], "v", parallel=False)
         pred = set(sim["ranked"][0]["expected_failing_tests"])
         with tempfile.TemporaryDirectory() as td:
@@ -113,8 +121,12 @@ def main() -> None:
         for k in ("false_positives", "missed"):
             for t in r[k][:3]:
                 print(f"    {k}: {t}")
-    Path("docs").mkdir(exist_ok=True)
-    Path("docs/validation_results.json").write_text(json.dumps(results, indent=1))
+    if len(sys.argv) > 3:                                   # your own experiments: never touch the shipped results
+        out = Path(f"validation_results_{root.name}.json")
+    else:
+        out = Path(__file__).resolve().parents[1] / "docs" / "validation_results.json"
+    out.write_text(json.dumps(results, indent=1))
+    print(f"\nresults written to {out}")
 
 
 if __name__ == "__main__":

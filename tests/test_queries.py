@@ -155,7 +155,7 @@ def test_hops_equal_independent_bfs(tmp_path, db):
                     assert all(any(e.caller == a and e.callee == b for e in calls) for a, b in zip(path, path[1:]))
 
 
-@pytest.mark.skipif(not os.environ.get("PREFLIGHT_TARGETS"), reason="set PREFLIGHT_TARGETS=~/graphhacks/targets")
+@pytest.mark.skipif(not os.environ.get("PREFLIGHT_TARGETS"), reason="set PREFLIGHT_TARGETS=~/targets")
 def test_real_cookiecutter(db):
     ws = Path(os.environ["PREFLIGHT_TARGETS"]).expanduser() / "cookiecutter"
     sync_workspace(ws, "canon_cc", db=db)

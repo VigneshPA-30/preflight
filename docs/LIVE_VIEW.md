@@ -18,7 +18,7 @@ The MCP server is started by Claude Desktop and owns the embedded database. Add 
     "preflight": {
       "command": "wsl.exe",
       "args": ["-d", "Ubuntu-24.04", "-e", "bash", "-lc",
-        "cd ~/graphhacks/preflight && PREFLIGHT_DB=$HOME/.preflight/desktop.db PREFLIGHT_PORT=6390 PREFLIGHT_KEEP_UNIVERSES=1 uv run python -m preflight.server"]
+        "cd ~/preflight && PREFLIGHT_DB=$HOME/.preflight/desktop.db PREFLIGHT_PORT=6390 PREFLIGHT_KEEP_UNIVERSES=1 uv run python -m preflight.server"]
     }
   }
 }
@@ -33,11 +33,11 @@ The MCP server is started by Claude Desktop and owns the embedded database. Add 
 
 ```bash
 # terminal 1: activity feed
-cd ~/graphhacks/preflight
+cd ~/preflight
 PREFLIGHT_PORT=6390 uv run python -m preflight.viewer          # open http://localhost:8765
 
 # terminal 2: FalkorDB Browser (first run downloads it, a few minutes)
-cd ~/graphhacks/preflight
+cd ~/preflight
 PREFLIGHT_PORT=6390 bash scripts/start_browser.sh              # open http://localhost:3000
 ```
 
@@ -118,6 +118,6 @@ older version, quit Claude Desktop, run `pkill redis-server` in WSL, and reopen 
 - If `PREFLIGHT_PORT` is taken, the server logs it and continues without a port.
 - The database port opens when Claude Desktop first uses the MCP server (your first tool call), not when the app starts. Send one tool call before starting the Browser.
 - Windows reaches WSL servers on `localhost` (WSL2 default). If a page does not open, run `wsl --shutdown` and reopen.
-- What was tested: the viewer page (loaded in a simulated browser and fed a real recorded session), the viewer's HTTP and live-stream
-  endpoints, and the Browser run from source against an embedded database with a port (automatic sign-in worked and listed the graph).
-  I could not watch the Browser *draw* graphs in a real browser window in my test environment, so check that once on your laptop.
+- Tested: the viewer page (loaded in a simulated browser and fed a real recorded session), the viewer's HTTP and live-stream
+  endpoints, and the Browser run from source against an embedded database with a port (the automatic sign-in worked and listed the graph).
+  The drawing of graphs inside the Browser window itself is not covered by automated checks.

@@ -1,6 +1,6 @@
 """Measure the tool on real projects and write docs/BENCHMARK.md (numbers for the README).
 
-    uv run python scripts/benchmark.py ~/graphhacks/targets/cookiecutter ~/graphhacks/targets/invoke
+    uv run python scripts/benchmark.py ~/targets/cookiecutter ~/targets/invoke
 """
 from __future__ import annotations
 

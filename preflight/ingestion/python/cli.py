@@ -1,6 +1,6 @@
 """Run ingestion from the terminal and look at the lying mocks.
 
-    uv run python -m preflight.ingestion.python.cli ~/graphhacks/targets/cookiecutter
+    uv run python -m preflight.ingestion.python.cli ~/targets/cookiecutter
     uv run python -m preflight.ingestion.python.cli <workspace> --target cookiecutter.main.generate_context
 """
 from __future__ import annotations

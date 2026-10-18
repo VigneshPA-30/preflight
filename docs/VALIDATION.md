@@ -20,11 +20,23 @@
 
 ## What the experiment found and fixed
 
-The first run had precision 0.62 on E4 and missed whole groups of tests. Comparing with the real suite showed three flaws, all fixed:
+The first run, before any fix, predicted 325 tests and 305 of them really failed (precision 0.94, recall 0.98).
+Comparing with the real suite exposed flaws. Each fix was then **switched off on its own** and the experiment re-run, to measure what it did:
 
-- A test that **mocks a call in the middle of a path** never reaches the code behind it. The tool now follows only unmocked paths.
-- A `conftest.py` that fails to import takes down **every test in its folder**.
-- `mocker.patch("pkg.mod.name")` must **import** `pkg.mod`; a test whose patch target cannot be imported fails.
+| Version | Predicted | In both | Precision | Recall |
+|---|---|---|---|---|
+| First run (no fixes) | 325 | 305 | 0.94 | 0.98 |
+| All fixes except the path-cut fix | 327 | 307 | 0.94 | 0.99 |
+| All fixes except the patch-import rule | 317 | 305 | 0.96 | 0.98 |
+| All fixes except the conftest rule | 319 | 307 | 0.96 | 0.99 |
+| **All fixes (final)** | **319** | **307** | **0.96** | **0.99** |
+
+- **A mock in the middle of a call path cuts the path.** A test that mocks `cli.cookiecutter` never reaches the code behind it.
+  This fix raised precision (experiment E4: 50 predicted tests became 42, with the same 31 correct).
+- **`patch("pkg.mod.name")` must import `pkg.mod`.** A test whose patch target cannot be imported fails.
+  This fix raised recall (experiment E2: 2 more real failures found).
+- **A `conftest.py` that fails to import fails its whole folder.** This rule matches how pytest works, but it made **no measurable
+  difference** in these five experiments. It stays because it is correct, not because the experiment proved it.
 
 ## Remaining errors (known limits)
 
@@ -36,6 +48,25 @@ The first run had precision 0.62 on E4 and missed whole groups of tests. Compari
 ## Run it yourself
 
 ```
-python3 -m venv /tmp/cc_env && /tmp/cc_env/bin/pip install -e ~/graphhacks/targets/cookiecutter pytest pytest-mock freezegun
-uv run python scripts/validate_prediction.py ~/graphhacks/targets/cookiecutter /tmp/cc_env/bin/python
+python3 -m venv /tmp/cc_env && /tmp/cc_env/bin/pip install -e ~/targets/cookiecutter pytest pytest-mock freezegun
+uv run python scripts/validate_prediction.py ~/targets/cookiecutter /tmp/cc_env/bin/python
 ```
+
+## Check your own project
+
+Give the script a Python that has your project's test dependencies, and a file with your experiments:
+
+```
+uv run python scripts/validate_prediction.py ~/work/myproject /path/to/myproject-venv/bin/python experiments.json
+```
+
+```json
+[{"name": "make y required",
+  "target": "mypkg.util.compute",
+  "mutation": {"kind": "change_params", "target": "mypkg.util.compute", "new_params": ["x", "y"]},
+  "edit": ["mypkg/util.py", "def compute(x, y=0):", "def compute(x, y):"]}]
+```
+
+- `mutation` is what the tool simulates. `edit` is the same change really made in a **copy** of your project: `[file, exact old text (it must appear once), new text]`.
+- Your project is never changed. Results go to `validation_results_<project>.json` in the folder you run it from.
+- Your project's tests must pass before the change, otherwise the comparison means nothing.
