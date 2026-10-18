@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from preflight import schema as S
+from preflight.events import emit
 
 from .discover import detect_relaxed, discover
 from .extract import extract_file
@@ -111,6 +112,12 @@ def sync_workspace(workspace: Path, canon: str, db=None) -> dict[str, Any]:
         "parse_ms": sum(result.timings_ms.values()),
     }
     if old_hash and old_hash == result.workspace_hash:
-        return {"status": "unchanged", **report, **graph_counts(db, canon)}
-    report["load_ms"] = load_into_graph(db, canon, result, workspace)
-    return {"status": "loaded", **report, **graph_counts(db, canon)}
+        out = {"status": "unchanged", **report, **graph_counts(db, canon)}
+    else:
+        report["load_ms"] = load_into_graph(db, canon, result, workspace)
+        out = {"status": "loaded", **report, **graph_counts(db, canon)}
+    emit("sync", graph=canon, status=out["status"], files=out["files_total"], changed=out["files_changed"],
+         functions=out["functions"], tests=out["tests"], nodes=out["nodes"], edges=out["edges"],
+         calls=out["calls"], mocks=out["mocks"], refs=out["refs"], parse_ms=round(out["parse_ms"]),
+         load_ms=round(out.get("load_ms", 0)))
+    return out

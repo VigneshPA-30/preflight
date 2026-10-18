@@ -10,7 +10,9 @@ import hashlib
 import logging
 import os
 import re
+import socket
 import threading
+import time
 from pathlib import Path
 
 from redislite.falkordb_client import FalkorDB
@@ -30,13 +32,53 @@ def db_path() -> str:
     return str(path)
 
 
+def _listening(port: int) -> bool:
+    s = socket.socket()
+    s.settimeout(1)
+    try:
+        s.connect(("127.0.0.1", port))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
+def open_database(path: str, port: str | None) -> FalkorDB:
+    """Open the embedded database; with `port`, also listen on 127.0.0.1:port (for the FalkorDB Browser).
+
+    Claude Desktop KILLS the MCP server, which can leave the embedded database server running. The next start
+    then attaches to that old server and silently ignores the requested port. So: if the port is not open,
+    shut the leftover server down (it saves first) and start a new one with the port."""
+    if not port:
+        return FalkorDB(path)
+    cfg = {"port": str(port), "bind": "127.0.0.1"}
+    db = FalkorDB(path, serverconfig=cfg)
+    if not _listening(int(port)):
+        log.warning("database server was started without port %s (left over from a killed session): restarting it", port)
+        try:
+            db.execute_command("SHUTDOWN", "SAVE")
+        except Exception:  # noqa: BLE001   the connection drops as the server stops: expected
+            pass
+        time.sleep(0.5)
+        db = FalkorDB(path, serverconfig=cfg)
+        if not _listening(int(port)):
+            log.error("port %s is still not open (is it used by another program?)", port)
+    return db
+
+
 def get_db() -> FalkorDB:
     """Open the database once and reuse it (lazy, thread-safe)."""
     global _db
     with _lock:
         if _db is None:
-            log.info("opening FalkorDB at %s", db_path())
-            _db = FalkorDB(db_path())
+            port = os.environ.get("PREFLIGHT_PORT")     # lets the FalkorDB Browser connect (localhost only)
+            log.info("opening FalkorDB at %s%s", db_path(), f" (TCP port {port})" if port else "")
+            try:
+                _db = open_database(db_path(), port)
+            except Exception:  # noqa: BLE001   e.g. the port is taken: keep working without it
+                log.exception("could not open TCP port %s; continuing without it", port)
+                _db = FalkorDB(db_path())
         return _db
 
 

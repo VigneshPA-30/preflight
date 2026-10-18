@@ -8,7 +8,7 @@
   "recall": 1.0,
   "false_positives": [],
   "missed": [],
-  "pytest": "9 failed, 370 passed, 4 skipped, 2 warnings in 3.35s",
+  "pytest": "9 failed, 370 passed, 4 skipped, 2 warnings in 2.76s",
   "score": 11.25
  },
  {
@@ -24,7 +24,7 @@
   "missed": [
    "tests.test_cookiecutter_invocation.test_should_invoke_main"
   ],
-  "pytest": "37 failed, 261 passed, 4 skipped, 2 warnings, 13 errors in 2.10s",
+  "pytest": "37 failed, 261 passed, 4 skipped, 2 warnings, 13 errors in 1.60s",
   "score": 41.0
  },
  {
@@ -36,7 +36,7 @@
   "recall": 1.0,
   "false_positives": [],
   "missed": [],
-  "pytest": "2 failed, 377 passed, 4 skipped, 2 warnings in 3.82s",
+  "pytest": "2 failed, 377 passed, 4 skipped, 2 warnings in 2.68s",
   "score": 2.5
  },
  {
@@ -57,7 +57,7 @@
   "missed": [
    "tests.test_cookiecutter_invocation.test_should_invoke_main"
   ],
-  "pytest": "40 failed, 339 passed, 4 skipped, 2 warnings in 3.47s",
+  "pytest": "40 failed, 339 passed, 4 skipped, 2 warnings in 2.87s",
   "score": 8.25
  },
  {
@@ -71,7 +71,7 @@
   "missed": [
    "tests.test_cookiecutter_invocation.test_should_invoke_main"
   ],
-  "pytest": "3 failed, 126 passed, 3 skipped, 1 warning, 32 errors in 2.43s",
+  "pytest": "3 failed, 126 passed, 3 skipped, 1 warning, 32 errors in 1.38s",
   "score": 8.75
  }
 ]

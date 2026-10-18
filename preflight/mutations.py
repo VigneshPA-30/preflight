@@ -211,9 +211,9 @@ def _change_params(g, m: dict) -> dict:
     old = Sig(node["params"], node["kwonly"], node["required"], node["has_varargs"], node["has_varkw"])
     before = {(r[0], r[2]) for r in g.ro_query(Q_SIG_BREAKS, params={"q": q}).result_set}
     g.query("MATCH (f:Function {qname:$q}) SET f.params=$p, f.kwonly=$k, f.required=$r, "
-            "f.has_varargs=$va, f.has_varkw=$vk, f.mutated=true",
+            "f.has_varargs=$va, f.has_varkw=$vk, f.mutated=true, f.old_params=$op, f.old_required=$orq",
             params={"q": q, "p": sig.params, "k": sig.kwonly, "r": sig.required,
-                    "va": sig.has_varargs, "vk": sig.has_varkw})
+                    "va": sig.has_varargs, "vk": sig.has_varkw, "op": node["params"], "orq": node["required"]})
     rows = [r for r in g.ro_query(Q_SIG_BREAKS, params={"q": q}).result_set if (r[0], r[2]) not in before]
     short = q.rsplit(".", 1)[-1]
     sites = []
@@ -265,7 +265,7 @@ def _rename(g, m: dict) -> dict:
         definition["why"] += f" and keep `{old_name} = {new}` as a deprecated alias"
         return {"dead_end": False, "sites": [], "lying": [], "unverifiable": 0, "alias_debt": 1,
                 "edits": [definition], "change": f"rename {old_name} -> {new} (alias kept)"}
-    g.query("MATCH (f:Function {qname:$q}) SET f.renamed_to=$n, f.mutated=true", params={"q": q, "n": new})
+    g.query("MATCH (f:Function {qname:$q}) SET f.renamed_to=$n, f.old_name=$o, f.mutated=true", params={"q": q, "n": new, "o": old_name})
     sites = []
     for c, cfile, line, ns, is_test, in_tf, cmod in g.ro_query(Q_ALL_SITES, params={"q": q}).result_set:
         sites.append({"name": c, "file": cfile, "line": line, "ns": ns, "is_test": is_test,

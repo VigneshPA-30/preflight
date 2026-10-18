@@ -5,12 +5,15 @@ Lifecycle per candidate:  GRAPH.COPY -> evaluate on the clone -> delete the clon
 from __future__ import annotations
 
 import logging
+import os
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from preflight.db import UNIVERSE_PREFIX, get_db
+from preflight.db import UNIVERSE_PREFIX, get_db, sweep_universes
+from preflight.events import emit
 from preflight.mutations import evaluate_mutation
 
 log = logging.getLogger("preflight.simulate")
@@ -24,6 +27,11 @@ W_FILE = 0.25           # every extra file to edit
 W_ALIAS = 0.5           # a kept deprecated alias is technical debt
 W_UNVERIFIABLE = 0.5    # call sites using *args/**kwargs cannot be checked
 
+def keep_universes() -> bool:
+    """Demo switch: leave the clones in the database so the FalkorDB Browser can show them."""
+    return os.environ.get("PREFLIGHT_KEEP_UNIVERSES") == "1"
+
+
 # GRAPH.COPY forks the database process. Two forks at once fail with "could not fork",
 # so clone creation is serialized. Evaluation still runs in parallel.
 _copy_lock = threading.Lock()
@@ -31,11 +39,16 @@ COPY_RETRIES = 5
 
 
 def _copy_graph(canon: str, name: str):
+    """Clone the canonical graph. Returns (clone, milliseconds spent copying, milliseconds waiting for the lock)."""
     graph = get_db().select_graph(canon)
+    waited = time.perf_counter()
     with _copy_lock:
+        waited_ms = (time.perf_counter() - waited) * 1000
         for attempt in range(COPY_RETRIES):
             try:
-                return graph.copy(name)
+                t = time.perf_counter()
+                clone = graph.copy(name)
+                return clone, round((time.perf_counter() - t) * 1000, 2), round(waited_ms, 2)
             except Exception as exc:  # noqa: BLE001
                 if "could not fork" not in str(exc) or attempt == COPY_RETRIES - 1:
                     raise
@@ -62,6 +75,8 @@ def evaluate_candidate(universe, target: str, candidate: dict[str, Any]) -> dict
     results = [evaluate_mutation(universe, m) for m in candidate["mutations"]]
     dead = [r for r in results if r["dead_end"]]
     sites = [s for r in results for s in r["sites"]]
+    # silent breaks first: they are the ones nobody would notice (and what an agent's capped output must keep)
+    sites.sort(key=lambda s: ({"masked": 0, "untested": 1, "caught": 2}[s["status"]], s["file"], s["line"]))
     caught = sum(s["status"] == "caught" for s in sites)
     masked = sum(s["status"] == "masked" for s in sites)
     untested = sum(s["status"] == "untested" for s in sites)
@@ -104,30 +119,88 @@ def score(ev: dict[str, Any]) -> float:
                  + W_FILE * c["files"] + W_ALIAS * c["alias_debt"] + W_UNVERIFIABLE * c["unverifiable"], 2)
 
 
+def annotate_clone(g, cand: dict[str, Any], ev: dict[str, Any]) -> None:
+    """Demo mode only: label the clone so the FalkorDB Browser (which colors nodes by label) tells the story.
+
+    Changed        the function this plan modifies
+    CaughtBreak    a caller that breaks, and a real test would fail
+    MaskedBreak    a caller that breaks while every test that reaches it mocks the call: tests stay green
+    UntestedBreak  a caller that breaks and no test reaches
+    LyingTest      a test that mocks a broken call and stays green
+    ExpectedToFail a test the tool expects to fail
+    Broken calls also get k.broken = true, k.status and k.reason on the CALLS edge."""
+    try:
+        g.query("UNWIND $t AS q MATCH (f:Function {qname:q}) SET f:Changed",
+                params={"t": [m["target"] for m in cand["mutations"]]})
+        for status, label in (("caught", "CaughtBreak"), ("masked", "MaskedBreak"), ("untested", "UntestedBreak")):
+            names = sorted({s["name"] for s in ev["broken_callers"] if s["status"] == status})
+            if names:
+                g.query(f"UNWIND $n AS q MATCH (c:Function {{qname:q}}) SET c:{label}", params={"n": names})
+        edges = [{"c": s["name"], "line": s["line"], "t": s["mutation"], "s": s["status"], "r": s["reason"]}
+                 for s in ev["broken_callers"]]
+        if edges:
+            g.query("UNWIND $e AS r MATCH (c:Function {qname:r.c})-[k:CALLS {line:r.line}]->(f:Function {qname:r.t}) "
+                    "SET k.broken = true, k.status = r.s, k.reason = r.r", params={"e": edges})
+        for label, names in (("LyingTest", sorted({l["test"] for l in ev["lying_mocks"]})),
+                             ("ExpectedToFail", ev["expected_failing_tests"])):
+            if names:
+                g.query(f"UNWIND $n AS q MATCH (t:Function {{qname:q}}) SET t:{label}", params={"n": names})
+    except Exception:  # noqa: BLE001
+        log.exception("could not label the clone (demo mode only)")
+
+
+CLONE_QUERIES = [
+    ("What did this plan change?", "MATCH (f:Changed) RETURN f"),
+    ("What breaks? (picture)", "MATCH (c)-[k:CALLS]->(f:Changed) WHERE k.broken = true RETURN c,k,f LIMIT 100"),
+    ("Silent breaks and the mocks that hide them",
+     "MATCH (c)-[k:CALLS]->(f:Changed) WHERE k.status IN ['masked','untested'] "
+     "OPTIONAL MATCH (t:LyingTest)-[m:MOCKS]->(f) RETURN c,k,f,t,m LIMIT 100"),
+    ("How a failing test reaches a broken call",
+     "MATCH p=(t:ExpectedToFail)-[:CALLS|REFERENCES*1..3]->(c)-[:CALLS {broken:true}]->(f:Changed) RETURN p LIMIT 25"),
+]
+
+
 # ---------------------------------------------------------------- orchestration
 def _run_one(canon: str, run_id: str, index: int, target: str, cand: dict[str, Any]) -> dict[str, Any]:
-    name = f"{UNIVERSE_PREFIX}{run_id}_{index}"
+    slug = re.sub(r"\W+", "_", cand["name"]).strip("_")[:24]
+    name = f"{UNIVERSE_PREFIX}{run_id}_{index}_{slug}"
     out: dict[str, Any] = {"candidate": cand["name"], "description": cand.get("description", ""), "universe": name}
     universe = None
     t_total = time.perf_counter()
     try:
-        t = time.perf_counter()
-        universe = _copy_graph(canon, name)  # GRAPH.COPY (serialized)
-        out["copy_ms"] = round((time.perf_counter() - t) * 1000, 2)
+        universe, out["copy_ms"], out["copy_wait_ms"] = _copy_graph(canon, name)  # GRAPH.COPY (serialized)
+        emit("clone_created", run=run_id, candidate=cand["name"], graph=name, copy_ms=out["copy_ms"],
+             wait_ms=out["copy_wait_ms"])
         t = time.perf_counter()
         ev = evaluate_candidate(universe, target, cand)
         out["eval_ms"] = round((time.perf_counter() - t) * 1000, 2)
         out.update(ev)
         out["score"] = score(ev)
+        kept = keep_universes()
+        if kept:
+            annotate_clone(universe, cand, ev)
+        emit("candidate_evaluated", run=run_id, candidate=cand["name"], graph=name, eval_ms=out["eval_ms"],
+             verdict=ev["verdict"], score=out["score"], counts=ev["counts"], summary=ev["summary"],
+             changes=ev["changes"], dead_end_reason=ev["dead_end_reason"],
+             broken=[{k: b.get(k) for k in ("name", "file", "line", "status", "reason", "tests_reaching", "tests_mocking")}
+                     for b in ev["broken_callers"][:12]],
+             broken_total=len(ev["broken_callers"]),
+             lying=[{"test": l["test"], "hides": len(l["hides"]), "mock_file": l["mock_file"], "mock_line": l["mock_line"]}
+                    for l in ev["lying_mocks"][:6]],
+             queries=[{"title": t, "cypher": c} for t, c in CLONE_QUERIES] if kept else [])
     except Exception as exc:  # noqa: BLE001
         log.exception("universe %s failed", name)
         out["error"] = f"{type(exc).__name__}: {exc}"
     finally:
         if universe is not None:
-            try:
-                universe.delete()
-            except Exception:  # noqa: BLE001
-                log.exception("could not delete %s (startup sweep will retry)", name)
+            if keep_universes():
+                emit("clone_kept", run=run_id, candidate=cand["name"], graph=name)
+            else:
+                try:
+                    universe.delete()
+                    emit("clone_deleted", run=run_id, candidate=cand["name"], graph=name)
+                except Exception:  # noqa: BLE001
+                    log.exception("could not delete %s (startup sweep will retry)", name)
     out["total_ms"] = round((time.perf_counter() - t_total) * 1000, 2)
     return out
 
@@ -136,6 +209,9 @@ def run_simulation(canon: str, target: str, candidates: list[dict[str, Any]],
                    run_id: str, parallel: bool = True) -> dict[str, Any]:
     """Fork one universe per candidate, evaluate, delete, then rank (dead ends last)."""
     t0 = time.perf_counter()
+    if keep_universes():
+        sweep_universes()          # remove the clones of the previous run, keep this run's
+    emit("simulation_start", run=run_id, target=target, graph=canon, candidates=[c["name"] for c in candidates])
     jobs = [(canon, run_id, i, target, c) for i, c in enumerate(candidates, 1)]
     if parallel and len(jobs) > 1:
         with ThreadPoolExecutor(max_workers=min(len(jobs), 5)) as pool:

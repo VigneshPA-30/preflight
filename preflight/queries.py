@@ -27,26 +27,39 @@ def _rows(g, cypher: str, **params) -> list[list[Any]]:
     return g.ro_query(cypher, params=params).result_set
 
 
-Q_REACH_PATHS = ("UNWIND $cs AS cq MATCH (c:Function {qname: cq}) "
-                 "MATCH p=(t:Function {is_test:true})-[:CALLS|REFERENCES*1..4]->(c) "
-                 "RETURN cq, t.qname, [r IN relationships(p) | [type(r), r.ns, endNode(r).qname]] LIMIT 100000")
+Q_REACH_SIMPLE = ("UNWIND $cs AS cq MATCH (c:Function {qname: cq}) "
+                  "OPTIONAL MATCH (t:Function {is_test:true})-[:CALLS|REFERENCES*1..4]->(c) "
+                  "RETURN cq, collect(DISTINCT t.qname)")
+Q_REACH_PATHS = ("UNWIND $pairs AS pr MATCH (c:Function {qname: pr[0]}), (t:Function {qname: pr[1]}) "
+                 "MATCH p=(t)-[:CALLS|REFERENCES*1..4]->(c) "
+                 "RETURN pr[0], pr[1], [r IN relationships(p) | [type(r), r.ns, endNode(r).qname]] LIMIT 100000")
 Q_ALL_MOCKS = "MATCH (t:Function)-[m:MOCKS]->(f:Function) RETURN t.qname, f.qname, m.ns"
 
 
 def reach_map(g, callers: list[str]) -> dict[str, set[str]]:
     """Which tests REALLY run each caller?
 
-    A test reaches a caller through a path of calls/references (up to 4 steps), but only if the test
-    does not mock one of the calls on that path: a mocked call replaces everything behind it."""
+    A test reaches a caller through calls/references (up to 4 steps), unless the test mocks one of the calls
+    on the way: a mocked call replaces everything behind it. Fast path: a test with no mocks at all cannot
+    have a cut path, so only tests that mock something get the (more expensive) path check."""
     out: dict[str, set[str]] = {c: set() for c in callers}
     if not callers:
         return out
     mocked = {(t, f, ns) for t, f, ns in _rows(g, Q_ALL_MOCKS)}
-    for cq, t, edges in _rows(g, Q_REACH_PATHS, cs=callers):
-        if t in out[cq]:
-            continue
-        if not any(kind == "CALLS" and (t, callee, ns) in mocked for kind, ns, callee in edges):
-            out[cq].add(t)
+    mock_tests = {t for t, _f, _ns in mocked}
+    pairs: list[list[str]] = []
+    for cq, ts in _rows(g, Q_REACH_SIMPLE, cs=callers):
+        for t in ts:
+            if t in mock_tests:
+                pairs.append([cq, t])
+            else:
+                out[cq].add(t)
+    if pairs:
+        for cq, t, edges in _rows(g, Q_REACH_PATHS, pairs=pairs):
+            if t in out[cq]:
+                continue
+            if not any(kind == "CALLS" and (t, callee, ns) in mocked for kind, ns, callee in edges):
+                out[cq].add(t)
     return out
 
 

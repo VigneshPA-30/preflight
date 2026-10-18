@@ -17,3 +17,5 @@ dist/
 
 .data/
 .DS_Store
+*:Zone.Identifier
+*:Zone.Identifier

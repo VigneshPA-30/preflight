@@ -4,6 +4,7 @@ RULE: stdout belongs to the MCP protocol. Never print(). Log to stderr only.
 """
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import re
@@ -24,7 +25,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("preflight")
 
-from preflight import core, simulate  # noqa: E402  (after logging setup)
+from preflight import core, events, simulate  # noqa: E402  (after logging setup)
 from preflight.db import (  # noqa: E402
     UNIVERSE_PREFIX, canon_name, get_db, graph_exists, sweep_universes,
 )
@@ -112,6 +113,7 @@ def _ensure_graph(ws: Path) -> tuple[str, dict[str, Any]]:
         r = core.sync_workspace(ws, canon)
         sync = {"status": r["status"], "files_changed": r["files_changed"]}
     _active_workspace = ws
+    events.emit("workspace", graph=canon, path=str(ws), sync=sync)
     return canon, sync
 
 
@@ -124,8 +126,60 @@ def _cap(items: list, n: int = MAX_ITEMS) -> tuple[list, int]:
     return items[:n], max(0, len(items) - n)
 
 
+
+# ---------- live event log (read by `python -m preflight.viewer`) ----------
+def _safe(fn):
+    try:
+        return fn()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def traced(args_fn, result_fn):
+    """Write tool_start / tool_end events around a tool. Never changes the tool's result."""
+    def deco(fn):
+        @functools.wraps(fn)
+        def wrapper(*a, **kw):
+            call = uuid.uuid4().hex[:8]
+            events.CURRENT["call"] = call
+            t = time.perf_counter()
+            events.emit("tool_start", tool=fn.__name__, call=call, args=_safe(lambda: args_fn(*a, **kw)))
+            try:
+                res = fn(*a, **kw)
+            except Exception as exc:
+                events.emit("tool_end", tool=fn.__name__, call=call, ok=False, error=str(exc)[:300],
+                            ms=round((time.perf_counter() - t) * 1000, 1))
+                events.CURRENT["call"] = None
+                raise
+            ok = bool(isinstance(res, dict) and res.get("ok", True))
+            events.emit("tool_end", tool=fn.__name__, call=call, ok=ok, ms=round((time.perf_counter() - t) * 1000, 1),
+                        error=None if ok else (res or {}).get("error"), summary=_safe(lambda: result_fn(res)))
+            events.CURRENT["call"] = None
+            return res
+        return wrapper
+    return deco
+
+
+def _sum_sync(r):
+    return {k: r.get(k) for k in ("status", "files_total", "files_changed", "functions", "tests", "calls",
+                                  "mocks", "parse_ms", "load_ms", "elapsed_ms")}
+
+
+def _sum_inspect(r):
+    if not r.get("found"):
+        return {"found": False, "suggestions": r.get("suggestions")}
+    q = r["target"]
+    return {"found": True, **r["summary"], "hub": r.get("hub"), "ms": r.get("elapsed_ms"),
+            "cypher": f"MATCH p=(c:Function)-[:CALLS*1..3]->(f:Function {{qname:'{q}'}}) RETURN p LIMIT 150"}
+
+
+def _sum_simulate(r):
+    return {"winner": r.get("winner"), "why": r.get("why"), "wall_ms": r.get("wall_ms"),
+            "comparison": r.get("comparison"), "kept": simulate.keep_universes()}
+
 # ---------- tools ----------
 @mcp.tool(annotations=WRITE)
+@traced(lambda: {}, lambda r: {k: r.get(k) for k in ('copy_ms', 'isolated')})
 def check_graph_engine() -> dict[str, Any]:
     """Health check. Creates a tiny graph, clones it with GRAPH.COPY, deletes both,
     and returns real timings. Use it to confirm the engine works."""
@@ -158,6 +212,7 @@ def check_graph_engine() -> dict[str, Any]:
 
 
 @mcp.tool(annotations=WRITE)
+@traced(lambda workspace_path: {"workspace": workspace_path}, _sum_sync)
 def sync_workspace_graph(workspace_path: str) -> dict[str, Any]:
     """Load or update the code graph for a workspace (only changed files are re-parsed).
     Call once per session and again after files change."""
@@ -177,6 +232,7 @@ def sync_workspace_graph(workspace_path: str) -> dict[str, Any]:
 
 
 @mcp.tool(annotations=READ)
+@traced(lambda function_name, max_hops=5, workspace_path=None: {"function": function_name, "max_hops": max_hops}, _sum_inspect)
 def inspect_blast_radius(function_name: str, max_hops: int = 5,
                          workspace_path: str | None = None) -> dict[str, Any]:
     """Show who is affected if a function changes: callers hop by hop, and tests that
@@ -197,6 +253,11 @@ def inspect_blast_radius(function_name: str, max_hops: int = 5,
 
 
 @mcp.tool(annotations=WRITE)
+@traced(lambda target_func, candidates, workspace_path=None: {
+    "target": target_func,
+    "plans": [{"name": c.name, "changes": [f"{m.kind} {m.target.rsplit('.', 1)[-1]} "
+                                          f"{m.new_params if m.new_params is not None else m.new_name}"
+                                          for m in c.mutations]} for c in candidates]}, _sum_simulate)
 def simulate_refactor_decisions(target_func: str, candidates: list[Candidate],
                                 workspace_path: str | None = None) -> dict[str, Any]:
     """Test 1-5 rival refactoring plans BEFORE editing any file. Each plan runs on its
@@ -247,6 +308,9 @@ def main() -> None:
         log.info("startup sweep removed %d leftover universe graph(s)", removed)
     except Exception:  # noqa: BLE001
         log.exception("startup sweep failed (continuing)")
+    events.rotate()
+    events.emit("server_start", db=str(__import__("preflight.db", fromlist=["db_path"]).db_path()),
+                port=os.environ.get("PREFLIGHT_PORT"), keep_universes=simulate.keep_universes())
     mcp.run()  # stdio transport
 
 
