@@ -209,8 +209,6 @@ Gristle, codebase-graph, CodeGraphContext). I read their descriptions and did no
 ## How this was built
 
 I used an AI assistant (Claude, by Anthropic) as a pair programmer for code, tests and documentation.
-`<EDIT THIS: say in your own words what you decided, designed and verified yourself, for example the project idea,
-the scope, the choice of tracks, the check of results against real test runs and grep.>`
 Third-party libraries: FalkorDB / falkordblite, the MCP Python SDK, pytest, pydantic.
 
 ## Repository layout
