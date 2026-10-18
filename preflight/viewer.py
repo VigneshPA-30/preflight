@@ -41,8 +41,8 @@ def graph_listing() -> dict:
                 n = g.ro_query("MATCH (n) RETURN count(n)").result_set[0][0]
                 e = g.ro_query("MATCH ()-[r]->() RETURN count(r)").result_set[0][0]
                 out.append({"name": name, "nodes": n, "edges": e,
-                            "kind": "clone" if name.startswith("uni_") else "code graph"})
-        out.sort(key=lambda g: (g["kind"] == "clone", g["name"]))
+                            "kind": "clone" if name.startswith("uni_") else ("memory" if name.startswith("mem_") else "code graph")})
+        out.sort(key=lambda g: ({"code graph": 0, "memory": 1, "clone": 2}[g["kind"]], g["name"]))
         return {"connected": True, "graphs": out}
     except Exception as exc:  # noqa: BLE001
         _client = None

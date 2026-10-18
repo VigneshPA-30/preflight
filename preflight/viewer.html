@@ -119,6 +119,8 @@ function argText(tool, a) {
   if (tool === "simulate_refactor_decisions") return short(a.target) + " | " + (a.plans || []).map((p) => p.name).join(", ");
   if (tool === "inspect_blast_radius") return short(a.function) + " (up to " + a.max_hops + " hops)";
   if (tool === "sync_workspace_graph") return a.workspace || "";
+  if (tool === "recall_decisions") return (a.function ? short(a.function) : "latest decisions") + (a.status ? " | " + a.status : "");
+  if (tool === "update_decision") return a.decision + " -> " + a.status + (a.agent ? " by " + a.agent : "");
   return "";
 }
 
@@ -225,6 +227,8 @@ function onEvent(e) {
         r.classList.add("click"); r.onclick = () => toggleDetail(c, e.candidate); } break;
     case "clone_deleted": if (c) { const r = planRow(c, e.candidate); const t = r.children[1].textContent; setCloneState(r, t + "  -> deleted", "state"); } break;
     case "clone_kept": if (c) { const r = planRow(c, e.candidate); const t = r.children[1].textContent; setCloneState(r, t + "  -> kept in FalkorDB", "state clone"); } break;
+    case "memory_saved": if (c) { line(c, "Memory:", "saved decision " + e.decision + " | " + e.earlier + " earlier decision(s) about this function or its neighbors"); } break;
+    case "memory_recalled": if (c) { line(c, "Memory:", "found " + e.found + " earlier decision(s)" + (e.function ? " for " + short(e.function) : "")); } break;
     case "tool_end": if (c) finishCall(c, e); break;
     default: break;
   }
@@ -250,6 +254,11 @@ function finishCall(c, e) {
     if (s.winner) { const w = h("div", "why"); w.append("Winner: "); w.append(h("b", "", s.winner)); w.append(" | " + (s.why || "")); c.body.append(w); }
     line(c, "Total time:", ms(s.wall_ms) + " for " + (s.comparison || []).length + " plans");
     if (s.kept) c.body.append(h("div", "hint", "Clones were kept. Open the FalkorDB Browser and choose a graph named uni_… to see the changed function."));
+  } else if (e.tool === "recall_decisions") {
+    for (const d of s.items || []) line(c, short(d.target) + ":", "decision " + d.id + " | winner " + (d.winner || "-") + " | " + d.status + (d.owner ? " (" + d.owner + ")" : "") + (d.relation ? " | " + d.relation : ""));
+    if (!(s.items || []).length) c.body.append(h("div", "state", "no earlier decisions"));
+  } else if (e.tool === "update_decision") {
+    line(c, "Decision " + s.id + ":", s.error ? s.error : (s.status + (s.owner ? " by " + s.owner : "")));
   } else if (e.tool === "check_graph_engine") {
     line(c, "Clone time:", ms(s.copy_ms) + " | isolated: " + s.isolated);
   }
@@ -271,7 +280,7 @@ async function pollGraphs() {
     if (!r.graphs.length) { box.append(h("div", "state", "no graphs yet")); return; }
     const t = h("table"); const hd = h("tr"); for (const x of ["Graph", "Nodes", "Edges"]) hd.append(h("th", "", x)); t.append(hd);
     for (const g of r.graphs) {
-      const row = h("tr"); const n = h("td", g.kind === "clone" ? "clone" : "", g.name); if (g.kind === "clone") n.append(h("div", "state", "clone (temporary)"));
+      const row = h("tr"); const n = h("td", g.kind === "clone" ? "clone" : "", g.name); if (g.kind === "clone") n.append(h("div", "state", "clone (temporary)")); if (g.kind === "memory") n.append(h("div", "state", "memory (kept)"));
       row.append(n, h("td", "num", String(g.nodes)), h("td", "num", String(g.edges))); t.append(row);
     }
     box.append(t);

@@ -4,7 +4,7 @@
 [FalkorDB](https://www.falkordb.com/), tries each rival refactoring on its own clone, and reports what would break,
 which tests would catch it, and which breakages would pass **silently** because a test mocks the call away.
 
-Built for **Graph Hacks: Context for AI Agents** (WeMakeDevs x FalkorDB), **Track 01: Agents That Act on Connected Data**.
+Built for **Graph Hacks: Context for AI Agents** (WeMakeDevs x FalkorDB). Main entry: **Track 01, Agents That Act on Connected Data**. It also enters **Track 02, Agent Memory and Coordination**, through the decision memory below.
 
 - Repository: `<GITHUB_URL>`
 - Demo video: `<VIDEO_URL>`
@@ -27,6 +27,8 @@ Tools that list "who calls this function" do not answer either question. Preflig
 | `sync_workspace_graph` | Builds or refreshes the code graph for a folder. Skips all work when no file changed. |
 | `inspect_blast_radius` | Callers hop by hop (with a witness path for deep callers), the exact call sites, which tests reach each caller, which tests mock the function, and a PageRank hub score. |
 | `simulate_refactor_decisions` | Takes 1 to 5 rival plans (`change_params` or `rename`). Runs each on a **cloned graph**. Returns a ranked comparison, every broken call site with a status, the tests expected to fail, and an ordered edit checklist for the winner. |
+| `recall_decisions` | **Memory.** Earlier decisions about a function and the functions near it, or the open work to continue. |
+| `update_decision` | **Memory.** Claim a decision (refused if another agent holds it), hand it back, or report `applied` / `abandoned` with notes. |
 | `check_graph_engine` | Health check: clones a tiny graph and reports timings. |
 
 Every broken call site gets one of three statuses:
@@ -42,6 +44,13 @@ Every broken call site gets one of three statuses:
 Changing `invoke.context.Context.__init__` to take a *required* `settings` parameter breaks 59 call sites.
 58 are caught by tests. **One is not:** `invoke.sudo` calls `Context()`, and its only test mocks `Context`.
 A test loop would see 58 failures, fix them, and ship the broken `sudo`.
+
+## Memory across sessions and agents
+
+Every simulation is saved as a **decision** in its own memory graph in FalkorDB (one per workspace, separate from the code graph,
+so it survives code changes). A later agent, in another session, sees what was decided, which plans were compared, which silent breaks
+were found, who owns the work, and what happened. A claim is one atomic Cypher query, so two agents cannot take the same job.
+Details, graph model, tests and limits (it remembers decisions, not conversations): [`docs/MEMORY.md`](docs/MEMORY.md).
 
 ## How it works
 
@@ -132,8 +141,9 @@ Then the change was really made in a copy of the code and cookiecutter's real te
 | 5 experiments | 319 | 310 | 307 | **0.96** | **0.99** |
 
 Reproduce it: `uv run python scripts/validate_prediction.py <cookiecutter> <python-with-test-deps>`.
-The experiment also found three bugs in an earlier version (mocks in the middle of a call path, failing `conftest.py`,
-`patch()` importing its target); they are fixed and covered by tests.
+The first version scored precision 0.94 and recall 0.98. Comparing with the real suite exposed two flaws that changed the
+numbers (a mock in the middle of a call path cuts the path; `patch()` imports its target), now fixed and covered by tests.
+Each fix was switched off on its own to measure it: see `docs/VALIDATION.md`.
 
 ### Speed
 
@@ -218,11 +228,12 @@ Third-party libraries: FalkorDB / falkordblite, the MCP Python SDK, pytest, pyda
 ```
 preflight/            server.py (MCP tools), queries.py (blast radius), mutations.py + simulate.py (simulation),
                       schema.py (graph contract), db.py, core.py
+preflight/memory.py   decision memory (recall, claim, outcome)
 preflight/viewer.py   live activity feed (python -m preflight.viewer), events.py (event log)
 preflight/ingestion/python/   discover, extract, mocks, resolve, pipeline, cli
 tests/                rule checks, real-interpreter oracle, property tests, real-repo checks, viewer tests
 scripts/              validate_prediction.py, benchmark.py, start_browser.sh
-docs/                 SCHEMA.md, SIMULATION.md, VALIDATION.md, BENCHMARK.md, LIVE_VIEW.md
+docs/                 SCHEMA.md, SIMULATION.md, VALIDATION.md, BENCHMARK.md, LIVE_VIEW.md, MEMORY.md
 ```
 
 ## License

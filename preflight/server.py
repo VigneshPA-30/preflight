@@ -25,7 +25,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("preflight")
 
-from preflight import core, events, simulate  # noqa: E402  (after logging setup)
+from preflight import core, events, memory, simulate  # noqa: E402  (after logging setup)
 from preflight.db import (  # noqa: E402
     UNIVERSE_PREFIX, canon_name, get_db, graph_exists, sweep_universes,
 )
@@ -39,7 +39,11 @@ mcp = FastMCP(
         "3) simulate_refactor_decisions when choosing between 2-5 refactoring "
         "approaches; it tests each on a cloned graph and returns the safest "
         "approach plus a file/line checklist. Use fully qualified names, "
-        "e.g. 'cookiecutter.main.generate_context'. Paths must be Linux paths."
+        "e.g. 'cookiecutter.main.generate_context'. Paths must be Linux paths. "
+        "MEMORY: every simulation is saved as a decision. Before changing a function, call recall_decisions to see "
+        "what was decided about it (or about functions near it) and what happened. Work on a decision: update_decision "
+        "status='claimed' (stops another agent taking the same job), then 'applied' or 'abandoned' with notes. "
+        "recall_decisions(status='open') lists unfinished work to hand over."
     ),
 )
 
@@ -173,9 +177,20 @@ def _sum_inspect(r):
             "cypher": f"MATCH p=(c:Function)-[:CALLS*1..3]->(f:Function {{qname:'{q}'}}) RETURN p LIMIT 150"}
 
 
+def _sum_recall(r):
+    return {"count": len(r.get("decisions", [])), "items": [
+        {k: d.get(k) for k in ("id", "target", "winner", "status", "owner", "relation")} for d in r.get("decisions", [])[:6]]}
+
+
+def _sum_update(r):
+    return {k: r.get(k) for k in ("id", "target", "status", "owner", "error")}
+
+
 def _sum_simulate(r):
     return {"winner": r.get("winner"), "why": r.get("why"), "wall_ms": r.get("wall_ms"),
-            "comparison": r.get("comparison"), "kept": simulate.keep_universes()}
+            "comparison": r.get("comparison"), "kept": simulate.keep_universes(),
+            "memory": (r.get("memory") or {}).get("decision_id"),
+            "earlier": len((r.get("memory") or {}).get("earlier_decisions", []))}
 
 # ---------- tools ----------
 @mcp.tool(annotations=WRITE)
@@ -278,6 +293,11 @@ def simulate_refactor_decisions(target_func: str, candidates: list[Candidate],
         out = simulate.run_simulation(
             canon, target_func, [c.model_dump() for c in candidates], run_id, parallel
         )
+        earlier = memory.recall(ws, target_func, limit=3)               # what was decided before (not this run)
+        decision_id = memory.record_simulation(ws, target_func, out)    # remember this run
+        events.emit("memory_saved", decision=decision_id, target=target_func, earlier=len(earlier))
+        out["memory"] = {"decision_id": decision_id, "earlier_decisions": [
+            {k: d[k] for k in ("id", "when", "target", "winner", "status", "owner", "relation", "outcomes")} for d in earlier]}
         for r in out["ranked"]:  # keep the output small: it goes into the agent's context window
             is_winner = r["candidate"] == out["winner"]
             for key, n in (("broken_callers", 25 if is_winner else 5), ("lying_mocks", 15 if is_winner else 3)):
@@ -299,6 +319,51 @@ def simulate_refactor_decisions(target_func: str, candidates: list[Candidate],
         return _fail(str(exc))
     except Exception as exc:  # noqa: BLE001
         log.exception("simulation failed")
+        return _fail(f"{type(exc).__name__}: {exc}")
+
+
+@mcp.tool(annotations=READ)
+@traced(lambda function_name=None, status=None, limit=8, workspace_path=None:
+        {"function": function_name, "status": status}, _sum_recall)
+def recall_decisions(function_name: str | None = None,
+                     status: Literal["open", "proposed", "claimed", "applied", "abandoned"] | None = None,
+                     limit: int = 8, workspace_path: str | None = None) -> dict[str, Any]:
+    """Memory: what was decided before. With function_name, returns earlier decisions about that function AND about
+    functions that call it or are called by it (marked 'nearby'). Without it, returns the latest decisions.
+    status='open' lists unfinished work (proposed or claimed), useful to continue or hand over work. Each decision
+    has the plans compared, the winner, who owns it, and what was reported afterwards."""
+    try:
+        if function_name:
+            _check_name(function_name)
+        ws = _resolve_workspace(workspace_path)
+        found = memory.recall(ws, function_name, status, limit)
+        events.emit("memory_recalled", function=function_name, found=len(found))
+        return {"ok": True, "count": len(found), "decisions": found}
+    except ValueError as exc:
+        return _fail(str(exc))
+    except Exception as exc:  # noqa: BLE001
+        log.exception("recall failed")
+        return _fail(f"{type(exc).__name__}: {exc}")
+
+
+@mcp.tool(annotations=WRITE)
+@traced(lambda decision_id, status, notes=None, agent=None, workspace_path=None:
+        {"decision": decision_id, "status": status, "agent": agent}, _sum_update)
+def update_decision(decision_id: str, status: Literal["proposed", "claimed", "applied", "abandoned"],
+                    notes: str | None = None, agent: str | None = None,
+                    workspace_path: str | None = None) -> dict[str, Any]:
+    """Memory: work on a decision from simulate_refactor_decisions. 'claimed' = you take the job (refused if another
+    agent already claimed it). 'applied' or 'abandoned' = you are done: put in notes what happened (tests run, what
+    you changed). 'proposed' hands it back. Give your name in agent so others know who has it."""
+    try:
+        ws = _resolve_workspace(workspace_path)
+        res = memory.update(ws, decision_id, status, notes, agent)
+        events.emit("memory_updated", decision=decision_id, status=status, agent=agent, ok=res.get("ok"))
+        return res
+    except ValueError as exc:
+        return _fail(str(exc))
+    except Exception as exc:  # noqa: BLE001
+        log.exception("update failed")
         return _fail(f"{type(exc).__name__}: {exc}")
 
 
